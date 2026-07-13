@@ -1,7 +1,7 @@
-import streamlit as st
-import yfinance as yf
 import pandas as pd
-import numpy as np
+from datetime import date
+from dateutil.relativedelta import relativedelta
+from jugaad_data.nse import stock_df
 
 # --- Page Configuration ---
 st.set_page_config(page_title="NSE Stock & Sector Tracker", layout="wide")
@@ -21,22 +21,40 @@ def fetch_and_calculate(ticker_symbol):
     # Append .NS for National Stock Exchange
     yf_ticker = f"{ticker_symbol}.NS" if not ticker_symbol.endswith('.NS') else ticker_symbol
     
+  def fetch_live_api_data(ticker_symbol):
     try:
-        # Fetch 2 years of data to ensure we have enough for 52-week (1 yr) + 20 EMA + 1 yr return
-        df = yf.download(yf_ticker, period="2y", progress=False)
+        # Clean the symbol (jugaad-data doesn't use the .NS extension)
+        clean_symbol = ticker_symbol.replace('.NS', '').strip()
         
-        if df.empty:
-            return None
+        # Set timeframe: Today going back exactly 2 years
+        end_date = date.today()
+        start_date = end_date - relativedelta(years=2)
+        
+        # Pull historical dataframe directly from NSE India
+        df_raw = stock_df(symbol=clean_symbol, from_date=start_date, to_date=end_date, series="EQ")
+        
+        if df_raw.empty:
+            return pd.DataFrame()
             
-        # Handle yfinance multi-index columns if they occur
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [col[0] for col in df.columns]
-
-        close = df['Close']
-        high = df['High']
-        low = df['Low']
+        # jugaad-data returns dates in descending order, so we reverse it to ascending
+        df_raw = df_raw.iloc[::-1].reset_index(drop=True)
         
-        current_price = close.iloc[-1]
+        # Set the DATE column as the index so your moving average math works
+        df_raw['DATE'] = pd.to_datetime(df_raw['DATE'])
+        df_raw.set_index('DATE', inplace=True)
+        
+        # Rename the columns to match what your Streamlit app is looking for
+        df = df_raw[['CLOSE', 'HIGH', 'LOW']].rename(columns={
+            'CLOSE': 'Close', 
+            'HIGH': 'High', 
+            'LOW': 'Low'
+        })
+        
+        return df
+
+    except Exception as e:
+        # Fails gracefully if NSE blocks the request or the symbol is wrong
+        return pd.DataFrame()
         
         # Trading day approximations (1 week ~ 5 trading days, 1 month ~ 21 trading days)
         periods = {
