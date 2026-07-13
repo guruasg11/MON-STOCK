@@ -1,4 +1,6 @@
+import streamlit as st
 import pandas as pd
+import numpy as np
 from datetime import date
 from dateutil.relativedelta import relativedelta
 from jugaad_data.nse import stock_df
@@ -7,7 +9,6 @@ from jugaad_data.nse import stock_df
 st.set_page_config(page_title="NSE Stock & Sector Tracker", layout="wide")
 
 # --- Default Data ---
-# Pre-populated with a mix of index leaders and specific thematic stocks
 DEFAULT_SECTORS = {
     "My Watchlist": ["ASTRAL", "TATAMOTORS", "BANKBARODA", "PFC", "RECLTD", "HUDCO", "RVNL", "GODREJIND"],
     "Nifty 50": ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "BHARTIARTL", "ITC", "L&T"],
@@ -16,12 +17,8 @@ DEFAULT_SECTORS = {
 }
 
 # --- Core Calculation Function ---
-@st.cache_data(ttl=900) # Caches data for 15 minutes to prevent API bans
+@st.cache_data(ttl=900) # Caches data for 15 minutes
 def fetch_and_calculate(ticker_symbol):
-    # Append .NS for National Stock Exchange
-    yf_ticker = f"{ticker_symbol}.NS" if not ticker_symbol.endswith('.NS') else ticker_symbol
-    
-  def fetch_live_api_data(ticker_symbol):
     try:
         # Clean the symbol (jugaad-data doesn't use the .NS extension)
         clean_symbol = ticker_symbol.replace('.NS', '').strip()
@@ -34,29 +31,16 @@ def fetch_and_calculate(ticker_symbol):
         df_raw = stock_df(symbol=clean_symbol, from_date=start_date, to_date=end_date, series="EQ")
         
         if df_raw.empty:
-            return pd.DataFrame()
+            return None
             
-        # jugaad-data returns dates in descending order, so we reverse it to ascending
+        # jugaad-data returns dates in descending order, so reverse it to ascending
         df_raw = df_raw.iloc[::-1].reset_index(drop=True)
         
-        # Set the DATE column as the index so your moving average math works
-        df_raw['DATE'] = pd.to_datetime(df_raw['DATE'])
-        df_raw.set_index('DATE', inplace=True)
+        # Extract exact columns for math
+        close = df_raw['CLOSE']
+        current_price = close.iloc[-1]
         
-        # Rename the columns to match what your Streamlit app is looking for
-        df = df_raw[['CLOSE', 'HIGH', 'LOW']].rename(columns={
-            'CLOSE': 'Close', 
-            'HIGH': 'High', 
-            'LOW': 'Low'
-        })
-        
-        return df
-
-    except Exception as e:
-        # Fails gracefully if NSE blocks the request or the symbol is wrong
-        return pd.DataFrame()
-        
-        # Trading day approximations (1 week ~ 5 trading days, 1 month ~ 21 trading days)
+        # Trading day approximations
         periods = {
             '1D %': 1, '3D %': 3, '1W %': 5, '2W %': 10, 
             '1M %': 21, '2M %': 42, '3M %': 63, '6M %': 126, '1Y %': 252
@@ -76,26 +60,26 @@ def fetch_and_calculate(ticker_symbol):
         ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
         
         # 52 Week High/Low (last 252 trading days)
-        last_252 = df.tail(252)
-        high_52w = last_252['High'].max()
-        low_52w = last_252['Low'].min()
+        last_252 = df_raw.tail(252)
+        high_52w = last_252['HIGH'].max()
+        low_52w = last_252['LOW'].min()
         
         pct_below_high = ((current_price - high_52w) / high_52w) * 100
         pct_above_low = ((current_price - low_52w) / low_52w) * 100
         
         return {
-            "Symbol": ticker_symbol.replace('.NS', ''),
+            "Symbol": clean_symbol,
             "LTP": current_price,
             **returns,
             "4 EMA": ema4,
             "10 EMA": ema10,
             "20 EMA": ema20,
             "52W High": high_52w,
-            "% Below 52W H": pct_below_high, # Will be negative or 0
+            "% Below 52W H": pct_below_high, 
             "52W Low": low_52w,
-            "% Above 52W L": pct_above_low   # Will be positive or 0
+            "% Above 52W L": pct_above_low   
         }
-    except Exception:
+    except Exception as e:
         return None
 
 # --- UI and Layout ---
@@ -114,8 +98,8 @@ else:
 
 # Multiselect for modifying stocks in the chosen basket
 selected_stocks = st.sidebar.multiselect(
-    "Modify Stocks in Basket (Enter NSE symbols without .NS)", 
-    options=list(set(default_stocks + ["RELIANCE", "TCS", "INFY"])), # Provide some defaults in the dropdown
+    "Modify Stocks in Basket", 
+    options=list(set(default_stocks + ["RELIANCE", "TCS", "INFY"])), 
     default=default_stocks
 )
 
@@ -140,7 +124,6 @@ if selected_stocks:
             df_results = pd.DataFrame(results)
             
             # --- Styling the DataFrame ---
-            # Define columns that need color coding (Returns and Percentages)
             color_cols = ['1D %', '3D %', '1W %', '2W %', '1M %', '2M %', '3M %', '6M %', '1Y %', '% Below 52W H', '% Above 52W L']
             
             def color_negative_red(val):
@@ -149,10 +132,9 @@ if selected_stocks:
                 color = '#ff4b4b' if val < 0 else '#09ab3b'
                 return f'color: {color}; font-weight: bold;'
 
-            # Format to 2 decimal places and apply colors
             styled_df = df_results.style.format({
                 col: "{:.2f}" for col in df_results.columns if col != 'Symbol'
-            }).applymap(color_negative_red, subset=color_cols)
+            }).map(color_negative_red, subset=color_cols) # updated from applymap to map to avoid deprecation warnings
 
             st.dataframe(styled_df, use_container_width=True, height=600)
 else:
