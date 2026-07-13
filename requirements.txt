@@ -1,0 +1,6 @@
+streamlit
+pandas
+numpy
+jugaad-data
+python-dateutil
+requests
